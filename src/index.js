@@ -6,6 +6,7 @@ const cors = require('cors');
 
 const app = express();
 
+// Session configuration
 app.use(session({
     secret: process.env.SESSION_SECRET || 'your-secret-key',
     resave: false,
@@ -16,6 +17,7 @@ app.use(session({
     }
 }));
 
+// CORS configuration
 app.use(cors({
     origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:8080'],
     credentials: true
@@ -23,19 +25,25 @@ app.use(cors({
 
 app.use(express.json());
 
-app.post('/api/shared/cart', (req, res) => {
+// Shared API endpoints
+const sharedApiRoutes = express.Router();
+
+sharedApiRoutes.post('/cart', (req, res) => {
     console.log('Saving cart data:', req.body);
     req.session.cartData = req.body;
     res.json({ success: true });
 });
 
-app.get('/api/shared/data', (req, res) => {
+sharedApiRoutes.get('/data', (req, res) => {
     console.log('Fetching shared data:', req.session.cartData);
     res.json({
         cart: req.session.cartData || null
     });
 });
 
+app.use('/api/shared', sharedApiRoutes);
+
+// Proxy configurations
 const mainAppProxy = createProxyMiddleware({
     target: 'http://localhost:3000',
     changeOrigin: true,
@@ -43,6 +51,13 @@ const mainAppProxy = createProxyMiddleware({
     onProxyReq: (proxyReq, req, res) => {
         proxyReq.setHeader('x-forwarded-host', req.headers.host);
         proxyReq.setHeader('x-forwarded-proto', req.protocol);
+    },
+    onError: (err, req, res) => {
+        console.error('Main app proxy error:', err);
+        res.writeHead(500, {
+            'Content-Type': 'text/plain'
+        });
+        res.end('Main application unavailable');
     }
 });
 
@@ -51,16 +66,27 @@ const checkoutAppProxy = createProxyMiddleware({
     changeOrigin: true,
     ws: true,
     pathRewrite: {
-        '^/checkout': ''
+        '^/checkout': '/' 
     },
     onProxyReq: (proxyReq, req, res) => {
         proxyReq.setHeader('x-forwarded-host', req.headers.host);
         proxyReq.setHeader('x-forwarded-proto', req.protocol);
+    },
+    onError: (err, req, res) => {
+        console.error('Checkout app proxy error:', err);
+        res.writeHead(500, {
+            'Content-Type': 'text/plain'
+        });
+        res.end('Checkout application unavailable');
     }
 });
 
+// Static files handling
+app.use('/checkout/_next/static', express.static('public'));
 app.use('/_next/static', express.static('public'));
-app.use('/_next/webpack-hmr', (req, res) => {
+
+// WebSocket handling
+const handleWebSocket = (req, res) => {
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -68,18 +94,24 @@ app.use('/_next/webpack-hmr', (req, res) => {
     });
     res.write('\n');
     req.on('close', () => res.end());
-});
+};
 
-app.use('/checkout/_next', checkoutAppProxy);
+app.use('/checkout/_next/webpack-hmr', handleWebSocket);
+app.use('/_next/webpack-hmr', handleWebSocket);
+
 app.use('/checkout', checkoutAppProxy);
-app.use('/_next', mainAppProxy);
 app.use('/', mainAppProxy);
 
+// Add debug middleware to log all requests
+app.use((req, res, next) => {
+    console.log(`${req.method} ${req.url}`);
+    next();
+});
+
+// Start server
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
     console.log(`Proxy server running on http://localhost:${PORT}`);
-    console.log('Routes:');
-    console.log('- Main app: http://localhost:8080');
-    console.log('- Checkout: http://localhost:8080/checkout');
-    console.log('- API: http://localhost:8080/api/shared/*');
+    console.log('Main app running on http://localhost:3000');
+    console.log('Checkout app running on http://localhost:3001');
 });
